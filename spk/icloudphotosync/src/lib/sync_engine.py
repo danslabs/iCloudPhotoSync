@@ -31,8 +31,8 @@ class _UrlExpiredError(Exception):
 
 # Network retry settings
 _NET_RETRY_MAX = 5           # max pause/retry cycles per album batch run
-_NET_RETRY_INTERVAL = 60     # seconds between connectivity checks
-_NET_CONSECUTIVE_FAIL = 10   # consecutive download failures before pausing
+_NET_RETRY_INTERVAL = 30     # seconds between connectivity checks
+_NET_CONSECUTIVE_FAIL = 30   # consecutive download failures before pausing
 
 
 def _check_connectivity():
@@ -44,11 +44,27 @@ def _check_connectivity():
         return False
 
 
+def _is_connection_error(exc):
+    """Return True if the exception indicates a real connectivity problem."""
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return True
+    if isinstance(exc, requests.exceptions.Timeout):
+        return True
+    if isinstance(exc, (OSError, IOError)):
+        return True
+    return False
+
+
 def _wait_for_connectivity(account_id, max_cycles=_NET_RETRY_MAX):
     """Block until network is available or max_cycles exhausted.
 
-    Returns True if connectivity was restored, False if we gave up.
+    Checks connectivity immediately first — if the network is fine,
+    returns True without any delay.
+    Returns True if connectivity is available, False if we gave up.
     """
+    if _check_connectivity():
+        LOGGER.info("Network check: connectivity OK, resuming immediately")
+        return True
     for cycle in range(max_cycles):
         LOGGER.info("Network check %d/%d — waiting %ds...",
                     cycle + 1, max_cycles, _NET_RETRY_INTERVAL)
@@ -905,9 +921,10 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
             )
 
         def _process(task):
+            """Returns (photo, fname, fpath, ok, is_conn_error)."""
             photo, url, fpath, fname = task
             if should_stop(account_id):
-                return (photo, fname, fpath, False)
+                return (photo, fname, fpath, False, False)
             try:
                 ok = _download_file(url, fpath, session=session)
             except _UrlExpiredError:
@@ -925,8 +942,12 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                 else:
                     LOGGER.error("Could not refresh URL for %s", fname)
                     ok = False
+            except Exception as e:
+                ok = False
+                if _is_connection_error(e):
+                    return (photo, fname, fpath, False, True)
             if not ok:
-                return (photo, fname, fpath, False)
+                return (photo, fname, fpath, False, False)
             if formats in ("jpg_only", "both") and heic_converter.is_heic(fname):
                 if heic_converter.can_convert():
                     jpg_path = heic_converter.convert_to_jpg(fpath)
@@ -936,7 +957,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                         except OSError:
                             pass
                         fpath = jpg_path
-            return (photo, fname, fpath, True)
+            return (photo, fname, fpath, True, False)
 
         pending_tasks = list(tasks)
         net_retries_used = 0
@@ -954,7 +975,7 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                         for f in futures:
                             f.cancel()
                         break
-                    photo, fname, fpath, ok = fut.result()
+                    photo, fname, fpath, ok, is_conn_err = fut.result()
                     with progress_lock:
                         if ok:
                             consecutive_fails = 0
@@ -966,13 +987,16 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                             else:
                                 progress.failed_photos += 1
                         else:
-                            consecutive_fails += 1
+                            if is_conn_err:
+                                consecutive_fails += 1
+                            else:
+                                consecutive_fails = 0
                             if consecutive_fails >= _NET_CONSECUTIVE_FAIL and not network_failed:
                                 LOGGER.warning(
-                                    "Album '%s': %d consecutive download failures — likely network outage",
+                                    "Album '%s': %d consecutive connection errors — likely network outage",
                                     album_name, consecutive_fails)
                                 network_failed = True
-                            if network_failed:
+                            if network_failed and is_conn_err:
                                 retry_tasks.append((photo, photo.original_url, fpath, fname))
                             else:
                                 progress.failed_photos += 1
@@ -1033,9 +1057,13 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
                         try:
                             photos = album.photos(limit=limit, offset=off, direction="DESCENDING")
                             break
-                        except Exception:
+                        except Exception as e:
                             LOGGER.exception("Producer fetch failed at offset=%d (attempt %d)", off, _retry + 1)
-                            if not _wait_for_connectivity(account_id, max_cycles=3):
+                            if _is_connection_error(e):
+                                if not _wait_for_connectivity(account_id, max_cycles=3):
+                                    break
+                            else:
+                                time.sleep(2 + _retry * 3)
                                 break
                     if photos is None or should_stop(account_id):
                         break
@@ -1081,10 +1109,13 @@ def _sync_album(account_id, photos_svc, album_name, target_dir, sync_config, pro
             for _retry in range(_NET_RETRY_MAX):
                 try:
                     return album.photos(limit=lim, offset=off, direction=dirn)
-                except Exception:
+                except Exception as e:
                     LOGGER.exception("Fetch failed at offset=%d (attempt %d)", off, _retry + 1)
-                    if not _wait_for_connectivity(account_id, max_cycles=3):
-                        return None
+                    if _is_connection_error(e):
+                        if not _wait_for_connectivity(account_id, max_cycles=3):
+                            return None
+                    else:
+                        time.sleep(2 + _retry * 3)
             return None
 
         fetch_pool = ThreadPoolExecutor(max_workers=1)

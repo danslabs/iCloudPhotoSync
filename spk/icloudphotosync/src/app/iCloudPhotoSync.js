@@ -214,6 +214,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.MainWindow", {
                 // Native-style checkboxes
                 ".syno-ux-checkbox, .syno-ux-checkbox-checked { display: inline-block; border: 1px solid #b0b8c0; border-radius: 3px; background: #fff; cursor: pointer; }" +
                 ".syno-ux-checkbox-checked { background: #057feb; border-color: #057feb; background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='white'%3E%3Cpath d='M6.5 11.5L3 8l1-1 2.5 2.5L12 4l1 1z'/%3E%3C/svg%3E\"); background-size: 16px; background-repeat: no-repeat; background-position: center; }" +
+                ".syno-ux-checkbox-indeterminate { background: #057feb; border-color: #057feb; background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='white'%3E%3Crect x='3' y='7' width='10' height='2' rx='1'/%3E%3C/svg%3E\"); background-size: 16px; background-repeat: no-repeat; background-position: center; }" +
                 // Settings form layout
 
                 // Section titles in settings
@@ -621,6 +622,10 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
 
     loadAccount: function (accountData) {
         var self = this;
+        if (this._syncPollTimer) {
+            clearTimeout(this._syncPollTimer);
+            this._syncPollTimer = null;
+        }
         this.currentAccountData = accountData;
 
         var statusCard, statusClass;
@@ -909,10 +914,12 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
 
             var syncing = (data.status === "syncing" || data.status === "starting");
 
-            // Push the syncing flag to settings + albums so they show their
-            // inline banner and lock inputs (instead of letting the user click
-            // Save and get a popup error from the backend).
-            if (self.appWin && self.appWin.detailPanel) {
+            // Only push the syncing flag to settings + albums if we are
+            // still viewing the account that this poll belongs to.
+            // Otherwise switching to account B while account A syncs
+            // would lock B's UI.
+            var isCurrentAccount = self.currentAccountData && self.currentAccountData.id === accountId;
+            if (isCurrentAccount && self.appWin && self.appWin.detailPanel) {
                 var dp = self.appWin.detailPanel;
                 if (dp.settingsTab && dp.settingsTab.setSyncRunning) {
                     dp.settingsTab.setSyncRunning(syncing);
@@ -1173,7 +1180,11 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
                     width: 30,
                     renderer: function (val, meta, record) {
                         if (record.get("type") === "folder") {
-                            return '<div style="width: 16px; height: 16px; margin: 2px auto 0;"></div>';
+                            var state = self._getFolderCheckState(record.get("name"));
+                            var cls = state === "all" ? "syno-ux-checkbox-checked"
+                                    : state === "some" ? "syno-ux-checkbox-indeterminate"
+                                    : "syno-ux-checkbox";
+                            return '<div class="' + cls + '" style="width: 16px; height: 16px; margin: 2px auto 0;"></div>';
                         }
                         var cls = val ? "syno-ux-checkbox-checked" : "syno-ux-checkbox";
                         return '<div class="' + cls + '" style="width: 16px; height: 16px; margin: 2px auto 0;"></div>';
@@ -1206,11 +1217,15 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
                     // Column 0 = checkbox
                     if (colIndex === 0) {
                         if (self._syncRunning) return;
-                        if (record.get("type") === "folder") return;
+                        if (record.get("type") === "folder") {
+                            self._toggleFolderSync(record.get("name"));
+                            return;
+                        }
                         var newVal = !record.get("sync_enabled");
                         record.set("sync_enabled", newVal);
                         record.commit();
                         self._toggleAlbumSync(record.get("name"), newVal, record.get("type"));
+                        self._refreshFolderCheckboxes(record.get("parent_folder"));
                     } else {
                         self.loadPhotos(record.get("name"));
                     }
@@ -1388,6 +1403,50 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
         }
     },
 
+    _getFolderChildren: function (folderName) {
+        var children = [];
+        this.albumStore.each(function (record) {
+            if (record.get("parent_folder") === folderName && record.get("type") !== "folder") {
+                children.push(record);
+            }
+        });
+        return children;
+    },
+
+    _getFolderCheckState: function (folderName) {
+        var children = this._getFolderChildren(folderName);
+        if (!children.length) return "none";
+        var enabled = 0;
+        for (var i = 0; i < children.length; i++) {
+            if (children[i].get("sync_enabled")) enabled++;
+        }
+        if (enabled === 0) return "none";
+        if (enabled === children.length) return "all";
+        return "some";
+    },
+
+    _toggleFolderSync: function (folderName) {
+        var state = this._getFolderCheckState(folderName);
+        var newVal = state !== "all";
+        var children = this._getFolderChildren(folderName);
+        for (var i = 0; i < children.length; i++) {
+            var child = children[i];
+            if (child.get("sync_enabled") !== newVal) {
+                child.set("sync_enabled", newVal);
+                child.commit();
+                this._toggleAlbumSync(child.get("name"), newVal, child.get("type"));
+            }
+        }
+        this._refreshFolderCheckboxes(folderName);
+    },
+
+    _refreshFolderCheckboxes: function (folderName) {
+        if (!folderName) return;
+        var view = this.albumListView.getView();
+        var idx = this.albumStore.findExact("name", folderName);
+        if (idx >= 0) view.refreshRow(idx);
+    },
+
     _toggleAlbumSync: function (albumName, enabled, albumType) {
         if (!this.currentAccountId) return;
         var self = this;
@@ -1413,11 +1472,17 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
     },
 
     _applySyncConfig: function () {
+        var self = this;
         var selected = (this.syncConfig.albums && this.syncConfig.albums.selected) || {};
         var sharedSelected = (this.syncConfig.shared_albums && this.syncConfig.shared_albums.selected) || {};
+        var folders = [];
         this.albumStore.each(function (record) {
             var name = record.get("name");
             var type = record.get("type");
+            if (type === "folder") {
+                folders.push(name);
+                return;
+            }
             if (type === "shared") {
                 record.set("sync_enabled", !!sharedSelected[name]);
             } else {
@@ -1425,6 +1490,9 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.AlbumGrid", {
             }
             record.commit();
         });
+        for (var i = 0; i < folders.length; i++) {
+            self._refreshFolderCheckboxes(folders[i]);
+        }
     },
 
     loadAlbums: function (accountId) {
