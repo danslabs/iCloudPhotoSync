@@ -38,6 +38,11 @@ def _probe_cross_compiled_heif():
     binary = os.path.join(_PKG_ROOT, "bin", "heif-convert")
     lib_dir = os.path.join(_PKG_ROOT, "lib")
     plugin_dir = os.path.join(lib_dir, "libheif", "plugins")
+    if os.path.isfile(binary) and not os.access(binary, os.X_OK):
+        try:
+            os.chmod(binary, 0o755)
+        except OSError:
+            pass
     if os.path.isfile(binary) and os.access(binary, os.X_OK):
         return {
             "cmd": "heif-convert",
@@ -58,6 +63,11 @@ def _probe_bundled_heif():
     binary = os.path.join(archdir, "heif-convert")
     lib_dir = os.path.join(archdir, "lib")
     plugin_dir = os.path.join(lib_dir, "libheif", "plugins")
+    if os.path.isfile(binary) and not os.access(binary, os.X_OK):
+        try:
+            os.chmod(binary, 0o755)
+        except OSError:
+            pass
     if os.path.isfile(binary) and os.access(binary, os.X_OK):
         return {
             "cmd": "heif-convert",
@@ -97,6 +107,13 @@ def _probe_backends():
         return b
     p = shutil.which("convert")
     if p:
+        try:
+            r = subprocess.run([p, "-list", "delegate"], capture_output=True, text=True, timeout=5)
+            if "heif" not in r.stdout.lower() and "heic" not in r.stdout.lower():
+                LOGGER.info("System convert at %s has no HEIC delegate, skipping", p)
+                return None
+        except Exception:
+            pass
         return {"cmd": "convert", "binary": p, "lib_dir": None, "plugin_dir": None, "source": "system"}
     return None
 

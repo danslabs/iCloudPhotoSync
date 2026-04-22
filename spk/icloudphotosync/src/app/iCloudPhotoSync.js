@@ -625,6 +625,19 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
             '</div>';
     },
 
+    _formatSize: function (size) {
+        if (!size || size <= 0) return "—";
+        if (size < 1024 * 1024) return Math.round(size / 1024) + " KB";
+        if (size < 1024 * 1024 * 1024) return (size / (1024 * 1024)).toFixed(1) + " MB";
+        return (size / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+    },
+
+    _formatDate: function (ts) {
+        if (!ts || ts <= 0) return "—";
+        var d = new Date(ts * 1000);
+        return d.toLocaleDateString("de-DE") + " " + d.toLocaleTimeString("de-DE", {hour: "2-digit", minute: "2-digit"});
+    },
+
     loadAccount: function (accountData) {
         var self = this;
         if (this._syncPollTimer) {
@@ -668,6 +681,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
             statusClass = "";
         }
 
+        var cs = this._cachedStats || {};
         var html = '<div style="padding: 20px;">' +
             statusCard +
             // Connection info card
@@ -681,10 +695,10 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
              accountData.status === "re_auth_needed" ? SYNO.SDS.iCloudPhotoSync._T("overview:status_reauth_needed") :
              accountData.status === "pending_2fa" ? SYNO.SDS.iCloudPhotoSync._T("overview:status_wait_2fa") : (accountData.status || "--")) +
             '</span></td></tr>' +
-            '<tr><td>' + SYNO.SDS.iCloudPhotoSync._T("overview:label_synced") + '</td><td id="ics-ov-synced">\u2026</td></tr>' +
-            '<tr><td>' + SYNO.SDS.iCloudPhotoSync._T("overview:label_storage") + '</td><td id="ics-ov-size">\u2026</td></tr>' +
-            '<tr><td>' + SYNO.SDS.iCloudPhotoSync._T("overview:label_last_sync") + '</td><td id="ics-ov-lastsync">\u2026</td></tr>' +
-            '<tr><td>' + SYNO.SDS.iCloudPhotoSync._T("overview:label_last_run") + '</td><td id="ics-ov-lastrun">\u2026</td></tr>' +
+            '<tr><td>' + SYNO.SDS.iCloudPhotoSync._T("overview:label_synced") + '</td><td id="ics-ov-synced">' + (cs.syncedText || '\u2014') + '</td></tr>' +
+            '<tr><td>' + SYNO.SDS.iCloudPhotoSync._T("overview:label_storage") + '</td><td id="ics-ov-size">' + (cs.sizeText || '\u2014') + '</td></tr>' +
+            '<tr><td>' + SYNO.SDS.iCloudPhotoSync._T("overview:label_last_sync") + '</td><td id="ics-ov-lastsync">' + (cs.lastSyncText || '\u2014') + '</td></tr>' +
+            '<tr><td>' + SYNO.SDS.iCloudPhotoSync._T("overview:label_last_run") + '</td><td id="ics-ov-lastrun">' + (cs.lastRunText || '\u2014') + '</td></tr>' +
             '</table>' +
             '</div>' +
             '</div>';
@@ -750,37 +764,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
                 }
                 // Also check if a move is active.
                 self._pollMoveStatus(accountData.id, true);
-                if (!data.manifest) return;
-                var m = data.manifest;
-                var el;
-                el = Ext.get("ics-ov-synced");
-                if (el) el.update(m.total_synced > 0 ? SYNO.SDS.iCloudPhotoSync._T("overview:items_synced", [m.total_synced.toLocaleString("de-DE")]) : SYNO.SDS.iCloudPhotoSync._T("overview:not_yet_synced"));
-                el = Ext.get("ics-ov-size");
-                if (el) {
-                    var size = m.total_size || 0;
-                    var sizeText = size < 1024 * 1024 ? Math.round(size / 1024) + " KB"
-                        : size < 1024 * 1024 * 1024 ? (size / (1024 * 1024)).toFixed(1) + " MB"
-                        : (size / (1024 * 1024 * 1024)).toFixed(2) + " GB";
-                    el.update(size > 0 ? sizeText : "\u2014");
-                }
-                el = Ext.get("ics-ov-lastsync");
-                if (el) {
-                    if (m.last_sync > 0) {
-                        var d = new Date(m.last_sync * 1000);
-                        el.update(d.toLocaleDateString("de-DE") + " " + d.toLocaleTimeString("de-DE", {hour: "2-digit", minute: "2-digit"}));
-                    } else {
-                        el.update("\u2014");
-                    }
-                }
-                el = Ext.get("ics-ov-lastrun");
-                if (el) {
-                    if (data.finished_at > 0) {
-                        var dr = new Date(data.finished_at * 1000);
-                        el.update(dr.toLocaleDateString("de-DE") + " " + dr.toLocaleTimeString("de-DE", {hour: "2-digit", minute: "2-digit"}));
-                    } else {
-                        el.update("\u2014");
-                    }
-                }
+                self._updateStatsFromData(data);
             });
         }
     },
@@ -860,6 +844,60 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
         // Show sync button again, hide stop button
         if (syncBtn) syncBtn.dom.style.display = "";
         if (stopBtn) stopBtn.dom.style.display = "none";
+    },
+
+    _setIdleState: function (title, subtitle) {
+        var iconEl = this.body.dom.querySelector(".ics-status-icon");
+        var titleEl = this.body.dom.querySelector(".ics-status-title");
+        var subtitleEl = Ext.get("ics-ov-subtitle");
+        var syncBtn = Ext.get("ics-sync-now-btn");
+        var stopBtn = Ext.get("ics-stop-sync-btn");
+        var progWrap = Ext.get("ics-sync-progress");
+
+        if (iconEl) iconEl.className = "ics-status-icon ics-icon-ok";
+        if (titleEl) titleEl.innerHTML = title;
+        if (subtitleEl) subtitleEl.update(subtitle);
+
+        if (syncBtn) syncBtn.dom.style.display = "";
+        if (stopBtn) stopBtn.dom.style.display = "none";
+        if (progWrap) progWrap.dom.style.display = "none";
+    },
+
+    _updateStatsFromData: function (data) {
+        if (!data || !data.manifest) return;
+        var m = data.manifest;
+        var syncedText = m.total_synced > 0 ? SYNO.SDS.iCloudPhotoSync._T("overview:items_synced", [m.total_synced.toLocaleString("de-DE")]) : SYNO.SDS.iCloudPhotoSync._T("overview:not_yet_synced");
+        var sizeText = this._formatSize(m.total_size);
+        var lastSyncText = this._formatDate(m.last_sync);
+        var lastRunText = this._formatDate(data.finished_at);
+
+        this._cachedStats = {
+            syncedText: syncedText,
+            sizeText: sizeText,
+            lastSyncText: lastSyncText,
+            lastRunText: lastRunText
+        };
+
+        var el;
+        el = Ext.get("ics-ov-synced");
+        if (el) el.update(syncedText);
+        el = Ext.get("ics-ov-size");
+        if (el) el.update(sizeText);
+        el = Ext.get("ics-ov-lastsync");
+        if (el) el.update(lastSyncText);
+        el = Ext.get("ics-ov-lastrun");
+        if (el) el.update(lastRunText);
+    },
+
+    _refreshStats: function (accountId) {
+        var self = this;
+        this.appWin.apiRequest("sync", {
+            action: "status",
+            account_id: accountId
+        }, function (success, data) {
+            if (!success || !data) return;
+            self._updateStatsFromData(data);
+        });
     },
 
     _startSync: function () {
@@ -1002,7 +1040,11 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
                 self._stopRequested = false;
                 var pw = Ext.get("ics-sync-progress"); if (pw) pw.dom.style.display = "none";
                 self.appWin.statusBar.body.update(SYNO.SDS.iCloudPhotoSync._T("status:ready"));
-                self.loadAccount(self.currentAccountData);
+                self._setIdleState(
+                    SYNO.SDS.iCloudPhotoSync._T("overview:status_uptodate"),
+                    SYNO.SDS.iCloudPhotoSync._T("overview:status_connected")
+                );
+                self._refreshStats(accountId);
             } else if (data.status === "error") {
                 self._stopRequested = false;
                 var pw2 = Ext.get("ics-sync-progress"); if (pw2) pw2.dom.style.display = "none";
@@ -1012,7 +1054,11 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
                 self._stopRequested = false;
                 var pw3 = Ext.get("ics-sync-progress"); if (pw3) pw3.dom.style.display = "none";
                 self.appWin.statusBar.body.update(SYNO.SDS.iCloudPhotoSync._T("overview:status_sync_stopped"));
-                self.loadAccount(self.currentAccountData);
+                self._setIdleState(
+                    SYNO.SDS.iCloudPhotoSync._T("overview:status_sync_stopped"),
+                    SYNO.SDS.iCloudPhotoSync._T("overview:status_connected")
+                );
+                self._refreshStats(accountId);
             }
         });
     },
@@ -1065,7 +1111,11 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
                         "info"
                     );
                 }
-                self.loadAccount(self.currentAccountData);
+                self._setIdleState(
+                    SYNO.SDS.iCloudPhotoSync._T("overview:status_uptodate"),
+                    SYNO.SDS.iCloudPhotoSync._T("overview:status_connected")
+                );
+                self._refreshStats(accountId);
             } else if (data.status === "error") {
                 self._moveStopRequested = false;
                 var pw2 = Ext.get("ics-sync-progress"); if (pw2) pw2.dom.style.display = "none";
@@ -1079,7 +1129,11 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.OverviewTab", {
                 if (!quietIfIdle) {
                     self.appWin.statusBar.body.update(SYNO.SDS.iCloudPhotoSync._T("overview:status_move_cancelled"));
                 }
-                self.loadAccount(self.currentAccountData);
+                self._setIdleState(
+                    SYNO.SDS.iCloudPhotoSync._T("overview:status_uptodate"),
+                    SYNO.SDS.iCloudPhotoSync._T("overview:status_connected")
+                );
+                self._refreshStats(accountId);
             }
         });
     },
@@ -2481,12 +2535,19 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
         }
     },
 
+    _getDsmUser: function () {
+        try { var u = _S("user"); if (u) return u; } catch (e) {}
+        try { var u2 = SYNO.SDS.UserSettings && SYNO.SDS.UserSettings.getUser && SYNO.SDS.UserSettings.getUser(); if (u2) return typeof u2 === "string" ? u2 : u2.username || u2.name || ""; } catch (e) {}
+        return "";
+    },
+
     _validateTargetPath: function (path) {
         if (!path) return;
         var self = this;
         this.appWin.apiRequest("config", {
             action: "validate_path",
-            path: path
+            path: path,
+            dsm_user: this._getDsmUser()
         }, function (success, data) {
             if (!success || !data) return;
             if (data.writable) return;
@@ -2604,20 +2665,7 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.SyncSettings", {
             parallel_downloads: parseInt(f("parallel_downloads") ? f("parallel_downloads").getValue() : 4, 10) || 4
         };
 
-        var dsmUser = "";
-        var tries = [
-            function () { return _S("SYNO.SDS.Session").getUser().username; },
-            function () { return _SYNO.SDS.Session.getUser().username; },
-            function () { return SYNO.SDS.Session.getUser().username; },
-            function () { return _S("SYNO.Core.DSMNotify").getUserName(); },
-            function () { return Ext.getUser().username; }
-        ];
-        for (var i = 0; i < tries.length; i++) {
-            try {
-                var v = tries[i]();
-                if (v) { dsmUser = v; break; }
-            } catch (e) { /* try next */ }
-        }
+        var dsmUser = this._getDsmUser();
 
         var self = this;
         var accountId = this.currentAccountId;

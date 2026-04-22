@@ -69,8 +69,9 @@ def _validate_path(params):
     if not path:
         return {"success": False, "error": {"code": 301, "message": "path required"}}
 
+    dsm_user = params.getvalue("dsm_user", "").strip()
     resolved = _resolve_share_path(path)
-    resolved = _resolve_home_path(resolved)
+    resolved = _resolve_home_path(resolved, dsm_user)
 
     from sync_engine import _writable, _get_mount_info
 
@@ -99,41 +100,47 @@ def _get_dsm_username():
     synoscgi doesn't set REMOTE_USER, so we extract the session ID
     from the HTTP_COOKIE and query the Synology Auth API internally.
     """
-    # Try direct env vars first
     user = os.environ.get("REMOTE_USER", "") or os.environ.get("HTTP_X_SYNO_USER", "")
     if user:
         return user
 
-    # Extract session ID from cookie
     cookie_str = os.environ.get("HTTP_COOKIE", "")
     sid = ""
-    for part in cookie_str.split(";"):
-        part = part.strip()
-        if part.startswith("id="):
-            sid = part[3:]
+    for cookie_name in ("id", "smid", "did"):
+        for part in cookie_str.split(";"):
+            part = part.strip()
+            if part.startswith(cookie_name + "="):
+                sid = part[len(cookie_name) + 1:]
+                break
+        if sid:
             break
 
     if not sid:
         return ""
 
-    # Query Synology Auth API to get username from session
-    try:
-        import urllib.request
-        url = "http://localhost:5000/webapi/entry.cgi?api=SYNO.Core.CurrentConnection&version=1&method=list&_sid=%s" % sid
-        resp = urllib.request.urlopen(url, timeout=5)
-        result = json.loads(resp.read().decode("utf-8"))
-        if result.get("success") and result.get("data"):
-            items = result["data"].get("items", [])
-            # Find the connection matching the request IP
-            remote_ip = os.environ.get("REMOTE_ADDR", "")
-            for item in items:
-                if item.get("from") == remote_ip:
-                    return item.get("who", "")
-            # Fallback: return first connection's user
-            if items:
-                return items[0].get("who", "")
-    except Exception:
-        pass
+    import urllib.request
+    remote_ip = os.environ.get("REMOTE_ADDR", "")
+    apis = [
+        "http://localhost:5000/webapi/entry.cgi?api=SYNO.Core.CurrentConnection&version=1&method=list&_sid=%s",
+        "http://localhost:5001/webapi/entry.cgi?api=SYNO.Core.CurrentConnection&version=1&method=list&_sid=%s",
+    ]
+    for url_tpl in apis:
+        try:
+            import ssl
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            resp = urllib.request.urlopen(url_tpl % sid, timeout=5, context=ctx)
+            result = json.loads(resp.read().decode("utf-8"))
+            if result.get("success") and result.get("data"):
+                items = result["data"].get("items", [])
+                for item in items:
+                    if item.get("from") == remote_ip:
+                        return item.get("who", "")
+                if items:
+                    return items[0].get("who", "")
+        except Exception:
+            continue
 
     return ""
 
@@ -150,7 +157,7 @@ def _resolve_share_path(path):
     """
     if not path or path.startswith("/volume"):
         return path
-    if path.startswith("/home"):
+    if path == "/home" or (path.startswith("/home/") and not path.startswith("/homes/")):
         return path
 
     parts = path.strip("/").split("/", 1)
@@ -162,7 +169,7 @@ def _resolve_share_path(path):
     try:
         import subprocess
         result = subprocess.run(
-            ["/usr/syno/sbin/synoshare", "--get", share_name],
+            ["sudo", "/usr/syno/sbin/synoshare", "--get", share_name],
             capture_output=True, text=True, timeout=5
         )
         for line in result.stdout.splitlines():
@@ -187,7 +194,7 @@ def _resolve_home_path(path, dsm_user=""):
 
     Note: FileChooser "home" share maps to "homes" directory (plural).
     """
-    if not path or (not path.startswith("/home/") and path != "/home"):
+    if not path or path.startswith("/homes/") or (not path.startswith("/home/") and path != "/home"):
         return path
     if not dsm_user:
         dsm_user = _get_dsm_username()
