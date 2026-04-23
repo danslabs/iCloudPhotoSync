@@ -742,7 +742,9 @@ class PhotosService:
         self._shared_albums = {}
         try:
             data = self._shared_zones()
-            for zone in data.get("zones", []):
+            zones = data.get("zones", [])
+            LOGGER.debug("Shared zones response: %d zone(s)", len(zones))
+            for zone in zones:
                 zone_id = zone.get("zoneID", {})
                 zone_name = zone_id.get("zoneName", "")
                 if not zone_name or zone_name == "PrimarySync":
@@ -775,11 +777,12 @@ class PhotosService:
                         self, album_name, album_type="shared",
                         zone_id=zone_id,
                     )
+                    LOGGER.debug("Found shared album: %s (zone %s)", album_name, zone_name)
                 except Exception:
-                    LOGGER.debug("Failed to read shared zone %s", zone_name)
+                    LOGGER.warning("Failed to read shared zone %s", zone_name, exc_info=True)
 
         except Exception:
-            LOGGER.exception("Failed to fetch shared albums")
+            LOGGER.warning("Failed to fetch shared albums", exc_info=True)
 
         return self._shared_albums
 

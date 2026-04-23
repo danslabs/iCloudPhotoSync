@@ -194,29 +194,66 @@ def get_account_dir(account_id):
 
 
 # --- Temporary password storage for pending 2FA ---
-# Stored in the per-account directory, cleared after successful auth.
+# Stored in /dev/shm (tmpfs / RAM-only) so the password never touches disk.
+# Falls back to the per-account directory when /dev/shm is unavailable.
+# Encrypted with a key derived from the machine ID so the file alone is useless.
+
+import base64
+import hashlib
+
+_SHM_DIR = "/dev/shm"
+_MACHINE_ID_PATHS = ("/etc/machine-id", "/var/lib/dbus/machine-id", "/etc/synoinfo.conf")
+
+
+def _pending_pw_path(account_id):
+    if os.path.isdir(_SHM_DIR):
+        return os.path.join(_SHM_DIR, "icloudphotosync_pw_%s" % account_id)
+    return os.path.join(ACCOUNTS_DIR, account_id, ".pending_pw")
+
+
+def _derive_key(account_id):
+    machine_id = ""
+    for path in _MACHINE_ID_PATHS:
+        try:
+            with open(path, "r") as f:
+                machine_id = f.read().strip()
+            break
+        except OSError:
+            continue
+    seed = ("icloudphotosync:%s:%s" % (machine_id, account_id)).encode()
+    return hashlib.sha256(seed).digest()
+
+
+def _xor_bytes(data, key):
+    return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+
 
 def save_pending_password(account_id, password):
-    """Store password temporarily while waiting for 2FA."""
-    pw_file = os.path.join(ACCOUNTS_DIR, account_id, ".pending_pw")
-    os.makedirs(os.path.join(ACCOUNTS_DIR, account_id), exist_ok=True)
-    with open(pw_file, "w") as f:
-        f.write(password)
+    """Store password encrypted temporarily while waiting for 2FA."""
+    pw_file = _pending_pw_path(account_id)
+    if not pw_file.startswith(_SHM_DIR):
+        os.makedirs(os.path.join(ACCOUNTS_DIR, account_id), exist_ok=True)
+    key = _derive_key(account_id)
+    encrypted = base64.b64encode(_xor_bytes(password.encode("utf-8"), key))
+    with open(pw_file, "wb") as f:
+        f.write(encrypted)
     os.chmod(pw_file, 0o600)
 
 
 def get_pending_password(account_id):
-    """Retrieve temporarily stored password, or None."""
-    pw_file = os.path.join(ACCOUNTS_DIR, account_id, ".pending_pw")
+    """Retrieve and decrypt temporarily stored password, or None."""
+    pw_file = _pending_pw_path(account_id)
     if os.path.isfile(pw_file):
-        with open(pw_file, "r") as f:
-            return f.read()
+        with open(pw_file, "rb") as f:
+            encrypted = base64.b64decode(f.read())
+        key = _derive_key(account_id)
+        return _xor_bytes(encrypted, key).decode("utf-8")
     return None
 
 
 def clear_pending_password(account_id):
     """Remove temporarily stored password."""
-    pw_file = os.path.join(ACCOUNTS_DIR, account_id, ".pending_pw")
+    pw_file = _pending_pw_path(account_id)
     try:
         os.remove(pw_file)
     except FileNotFoundError:

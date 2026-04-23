@@ -99,7 +99,7 @@ If you have ADP enabled, this app cannot access your iCloud Photos. ADP encrypts
 
 ## Privacy & security
 
-- Apple password is held in memory only during the 2FA handshake, then discarded
+- Apple password is stored in RAM only (`/dev/shm`) during the 2FA handshake, never written to disk, then discarded
 - Session cookies stored under `/var/packages/icloudphotosync/var/accounts/{id}/session/`
 - No telemetry, no analytics, no phone-home
 

@@ -7,6 +7,7 @@ Actions:
   photos  — Get photos in an album (paginated)
 """
 import json
+import logging
 import sys
 import os
 import time
@@ -14,6 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 import config_manager
 import icloud_client
+
+logger = logging.getLogger(__name__)
 
 ADP_ERROR_CODE = 320
 
@@ -172,7 +175,7 @@ def _list_albums(params):
                     "photo_count": cached_counts.get(name, -1),
                 })
         except Exception:
-            pass
+            logger.warning("Failed to list shared albums", exc_info=True)
 
         # Shared Library (iOS 16+ family sharing — separate from shared albums)
         has_shared_library = False
