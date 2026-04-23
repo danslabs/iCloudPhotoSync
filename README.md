@@ -113,20 +113,6 @@ If you have ADP enabled, this app cannot access your iCloud Photos. ADP encrypts
 - No telemetry, no analytics, no phone-home
 - See [SECURITY.md](SECURITY.md) for the full OWASP review
 
-## Changelog
-
-### v1.4.4 — Security hardening
-- Rate limiting on login, 2FA, and SMS endpoints (5 attempts/min)
-- Path traversal prevention for filenames and album names from iCloud
-- SSRF fix: proxy endpoints now validate hostnames instead of substring matching
-- Symlink-safe directory creation and hardlink operations
-- Session and cookie files written with restrictive permissions (0600)
-- 2FA password encryption upgraded from XOR to PBKDF2 + HMAC-SHA256
-- Build script: automatic CRLF→LF conversion for cross-platform builds
-
-### v1.4.2 — Multi-account fix
-- Fix sync crash when adding a second Apple ID ("Photos service not available")
-- Improved error messages for accounts without iCloud Photos enabled
 
 ## License
 
