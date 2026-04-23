@@ -10,11 +10,72 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
+import fcntl
+import json
 import time
 
 import config_manager
 import icloud_client
 import notifier
+
+_MAX_ATTEMPTS = 5
+_WINDOW_SECONDS = 60
+
+
+def _rate_limit(key):
+    """Returns True if the request should be blocked.
+
+    Allows _MAX_ATTEMPTS per key within _WINDOW_SECONDS. Uses fcntl.flock
+    for inter-process safety (each CGI request is a separate process).
+    """
+    now = time.time()
+    state_file = os.path.join(config_manager.PKG_VAR, ".rate_limit")
+    lock_file = state_file + ".lock"
+
+    try:
+        lock_fd = os.open(lock_file, os.O_WRONLY | os.O_CREAT, 0o600)
+    except OSError:
+        return False
+
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+        attempts = {}
+        try:
+            with open(state_file, "r") as f:
+                attempts = json.load(f)
+        except Exception:
+            pass
+
+        for k in list(attempts):
+            pruned = [t for t in attempts[k] if now - t < _WINDOW_SECONDS]
+            if pruned:
+                attempts[k] = pruned
+            else:
+                del attempts[k]
+
+        entries = attempts.get(key, [])
+        blocked = len(entries) >= _MAX_ATTEMPTS
+
+        if not blocked:
+            entries.append(now)
+            attempts[key] = entries
+
+        try:
+            tmp = state_file + ".tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(attempts, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, state_file)
+        except Exception:
+            pass
+
+        return blocked
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 def handle(params):
@@ -40,6 +101,12 @@ def _login(params):
         return {
             "success": False,
             "error": {"code": 201, "message": "apple_id and password required"}
+        }
+
+    if _rate_limit("login:" + apple_id.lower()):
+        return {
+            "success": False,
+            "error": {"code": 429, "message": "Too many login attempts, please wait a minute"}
         }
 
     # Find existing account by apple_id; only create after credentials validate
@@ -107,6 +174,12 @@ def _send_sms(params):
             "error": {"code": 203, "message": "account_id required"}
         }
 
+    if _rate_limit("sms:" + account_id):
+        return {
+            "success": False,
+            "error": {"code": 429, "message": "Too many SMS requests, please wait a minute"}
+        }
+
     account = config_manager.get_account(account_id)
     if not account:
         return {
@@ -149,6 +222,12 @@ def _verify_2fa(params):
         return {
             "success": False,
             "error": {"code": 203, "message": "account_id and code required"}
+        }
+
+    if _rate_limit("2fa:" + account_id):
+        return {
+            "success": False,
+            "error": {"code": 429, "message": "Too many verification attempts, please wait a minute"}
         }
 
     account = config_manager.get_account(account_id)

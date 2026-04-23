@@ -196,13 +196,21 @@ def get_account_dir(account_id):
 # --- Temporary password storage for pending 2FA ---
 # Stored in /dev/shm (tmpfs / RAM-only) so the password never touches disk.
 # Falls back to the per-account directory when /dev/shm is unavailable.
-# Encrypted with a key derived from the machine ID so the file alone is useless.
+#
+# Encryption: PBKDF2-derived keystream with random salt + HMAC-SHA256
+# authentication. The key is derived from machine-id + account-id + a
+# 16-byte random salt, so every encryption produces different ciphertext
+# and the file alone is useless without the machine identity.
 
-import base64
 import hashlib
+import hmac
 
 _SHM_DIR = "/dev/shm"
 _MACHINE_ID_PATHS = ("/etc/machine-id", "/var/lib/dbus/machine-id", "/etc/synoinfo.conf")
+
+_PBKDF2_ITERATIONS = 100_000
+_SALT_LEN = 16
+_HMAC_LEN = 32
 
 
 def _pending_pw_path(account_id):
@@ -211,21 +219,31 @@ def _pending_pw_path(account_id):
     return os.path.join(ACCOUNTS_DIR, account_id, ".pending_pw")
 
 
-def _derive_key(account_id):
-    machine_id = ""
+def _get_machine_id():
     for path in _MACHINE_ID_PATHS:
         try:
             with open(path, "r") as f:
-                machine_id = f.read().strip()
-            break
+                return f.read().strip()
         except OSError:
             continue
-    seed = ("icloudphotosync:%s:%s" % (machine_id, account_id)).encode()
-    return hashlib.sha256(seed).digest()
+    return ""
 
 
-def _xor_bytes(data, key):
-    return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+def _derive_keys(account_id, salt):
+    """Derive a 64-byte key block via PBKDF2, split into encryption + HMAC keys."""
+    seed = ("icloudphotosync:%s:%s" % (_get_machine_id(), account_id)).encode()
+    key_block = hashlib.pbkdf2_hmac("sha256", seed, salt, _PBKDF2_ITERATIONS, dklen=64)
+    return key_block[:32], key_block[32:]
+
+
+def _keystream_encrypt(data, key):
+    """XOR data with a PBKDF2-derived keystream (one block per 32 bytes)."""
+    out = bytearray()
+    for i in range(0, len(data), 32):
+        block_key = hashlib.sha256(key + i.to_bytes(4, "big")).digest()
+        chunk = data[i:i + 32]
+        out.extend(b ^ block_key[j] for j, b in enumerate(chunk))
+    return bytes(out)
 
 
 def save_pending_password(account_id, password):
@@ -233,22 +251,46 @@ def save_pending_password(account_id, password):
     pw_file = _pending_pw_path(account_id)
     if not pw_file.startswith(_SHM_DIR):
         os.makedirs(os.path.join(ACCOUNTS_DIR, account_id), exist_ok=True)
-    key = _derive_key(account_id)
-    encrypted = base64.b64encode(_xor_bytes(password.encode("utf-8"), key))
-    with open(pw_file, "wb") as f:
-        f.write(encrypted)
-    os.chmod(pw_file, 0o600)
+
+    salt = os.urandom(_SALT_LEN)
+    enc_key, hmac_key = _derive_keys(account_id, salt)
+    ciphertext = _keystream_encrypt(password.encode("utf-8"), enc_key)
+    mac = hmac.new(hmac_key, salt + ciphertext, "sha256").digest()
+
+    # File format: salt (16) || hmac (32) || ciphertext (variable)
+    fd = os.open(pw_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(salt)
+        f.write(mac)
+        f.write(ciphertext)
 
 
 def get_pending_password(account_id):
     """Retrieve and decrypt temporarily stored password, or None."""
     pw_file = _pending_pw_path(account_id)
-    if os.path.isfile(pw_file):
+    try:
         with open(pw_file, "rb") as f:
-            encrypted = base64.b64decode(f.read())
-        key = _derive_key(account_id)
-        return _xor_bytes(encrypted, key).decode("utf-8")
-    return None
+            blob = f.read()
+    except FileNotFoundError:
+        return None
+
+    if len(blob) < _SALT_LEN + _HMAC_LEN + 1:
+        return None
+
+    salt = blob[:_SALT_LEN]
+    stored_mac = blob[_SALT_LEN:_SALT_LEN + _HMAC_LEN]
+    ciphertext = blob[_SALT_LEN + _HMAC_LEN:]
+
+    enc_key, hmac_key = _derive_keys(account_id, salt)
+    expected_mac = hmac.new(hmac_key, salt + ciphertext, "sha256").digest()
+    if not hmac.compare_digest(stored_mac, expected_mac):
+        return None
+
+    plaintext = _keystream_encrypt(ciphertext, enc_key)
+    try:
+        return plaintext.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
 
 
 def clear_pending_password(account_id):

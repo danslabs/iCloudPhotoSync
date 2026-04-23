@@ -1,5 +1,5 @@
 SPK_NAME = icloudphotosync
-SPK_VERS = 1.4.2
+SPK_VERS = 1.4.3
 SPK_REV  = 1
 SPK_ICON = src/PACKAGE_ICON.PNG
 
@@ -11,7 +11,7 @@ UNSUPPORTED_ARCHS = $(OLD_PPC_ARCHS) $(ARMv5_ARCHS)
 MAINTAINER     = Pascal Pagel
 DESCRIPTION    = Automatically mirrors your iCloud photo library to a Synology NAS. Supports multi-account setups, incremental sync, album selection, HEIC conversion, and scheduled operation.
 DISPLAY_NAME   = iCloud Photo Sync
-CHANGELOG      = Fix multi-account sync crash — second iCloud account failed with "Photos service not available" due to exception import path mismatch and false-positive session restore. Improved error messages for accounts without iCloud Photos.
+CHANGELOG      = Security hardening: CSRF protection, DSM session auth gate, rate limiting, path traversal prevention, SSRF fix, symlink-safe file ops, encrypted 2FA password storage, restrictive file permissions.
 
 HOMEPAGE   = https://github.com/SynoCommunity/spksrc
 LICENSE    = MIT

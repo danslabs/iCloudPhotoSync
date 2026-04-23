@@ -33,7 +33,7 @@ No spksrc checkout required — just run the included build script:
 ./build.sh
 ```
 
-The resulting `.spk` file is created in the project root (e.g. `iCloudPhotoSync-1.4.2.spk`).
+The resulting `.spk` file is created in the project root (e.g. `iCloudPhotoSync-1.4.3.spk`).
 
 ### Building with spksrc
 
@@ -107,9 +107,26 @@ If you have ADP enabled, this app cannot access your iCloud Photos. ADP encrypts
 
 ## Privacy & security
 
-- Apple password is **never stored permanently** — it is only held temporarily during the 2FA handshake, encrypted with a machine-specific key (SHA-256), and kept in RAM only (`/dev/shm`). It is discarded immediately after authentication completes.
-- Session cookies stored under `/var/packages/icloudphotosync/var/accounts/{id}/session/`
+- Apple password is **never stored permanently** — it is only held temporarily during the 2FA handshake, encrypted with PBKDF2-derived keys and HMAC-authenticated, and kept in RAM only (`/dev/shm`). It is discarded immediately after authentication completes.
+- Session cookies stored under `/var/packages/icloudphotosync/var/accounts/{id}/session/` with restrictive file permissions (owner-only)
+- All API endpoints require a valid DSM session and CSRF token
 - No telemetry, no analytics, no phone-home
+- See [SECURITY.md](SECURITY.md) for the full OWASP review
+
+## Changelog
+
+### v1.4.3 — Security hardening
+- API endpoints now require DSM session authentication and SynoToken (CSRF protection)
+- Rate limiting on login, 2FA, and SMS endpoints (5 attempts/min)
+- Path traversal prevention for filenames and album names from iCloud
+- SSRF fix: proxy endpoints now validate hostnames instead of substring matching
+- Symlink-safe directory creation and hardlink operations
+- Session and cookie files written with restrictive permissions (0600)
+- 2FA password encryption upgraded from XOR to PBKDF2 + HMAC-SHA256
+
+### v1.4.2 — Multi-account fix
+- Fix sync crash when adding a second Apple ID ("Photos service not available")
+- Improved error messages for accounts without iCloud Photos enabled
 
 ## License
 

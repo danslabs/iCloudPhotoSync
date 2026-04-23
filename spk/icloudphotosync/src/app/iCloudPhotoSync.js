@@ -297,11 +297,13 @@ Ext.define("SYNO.SDS.iCloudPhotoSync.MainWindow", {
 
     // Helper: call our Python CGI backend via the 3rdparty path
     apiRequest: function (method, params, callback, usePost) {
-        var url = "/webman/3rdparty/iCloudPhotoSync/api.cgi";
+        var token = (typeof _S === "function" && _S("SynoToken")) || "";
+        var url = "/webman/3rdparty/iCloudPhotoSync/api.cgi?SynoToken=" + encodeURIComponent(token);
         var allParams = Ext.apply({ method: method }, params || {});
         Ext.Ajax.request({
             url: url,
             params: allParams,
+            headers: { "X-SYNO-TOKEN": token },
             method: usePost ? "POST" : "GET",
             success: function (response) {
                 try {

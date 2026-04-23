@@ -89,7 +89,8 @@ class PyiCloudSession(Session):
         # trust token and the user gets bounced to re-auth.
         try:
             tmp = self.service.session_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(self.service.session_data, f)
                 f.flush()
                 try:
@@ -103,6 +104,10 @@ class PyiCloudSession(Session):
         # Save cookies
         try:
             self.cookies.save(ignore_discard=True, ignore_expires=True)
+            try:
+                os.chmod(self.cookies.filename, 0o600)
+            except OSError:
+                pass
         except Exception:
             pass
 
