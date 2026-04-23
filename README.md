@@ -17,6 +17,12 @@ Built with the [SynoCommunity/spksrc](https://github.com/SynoCommunity/spksrc) c
 - **Multi-language** — English and German
 - **Unprivileged** — runs as `iCloudPhotoSync`, not root
 
+## Prebuild Releases
+
+You always find the latest version under releases:
+
+[https://github.com/Euphonique/iCloudPhotoSync/releases/latest](https://github.com/Euphonique/iCloudPhotoSync/releases/latest)
+
 ## Building
 
 ### Standalone build (recommended)
